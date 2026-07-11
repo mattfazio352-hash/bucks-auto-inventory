@@ -67,7 +67,6 @@ def _get(zip_code, start):
         "radius": RADIUS,
         "rows": ROWS,
         "start": start,
-        "car_type": "used,new",   # everything a buyer could shop
     })
     _calls += 1
     with urllib.request.urlopen(f"{BASE}?{params}", timeout=45) as r:
