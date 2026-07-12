@@ -33,7 +33,7 @@ import json, os, sys, time, urllib.parse, urllib.request
 # Anchor ZIPs spread across Bucks County (north / central / east / south). With a
 # ~25-mile radius these overlap and blanket the whole county plus nearby metro
 # inventory; the VIN de-dupe stitches them into one clean list.
-ANCHOR_ZIPS = ["18951", "18901", "18940", "19020"]
+ANCHOR_ZIPS = ["18901", "19020", "18951", "19124", "18103", "19401", "19380"]
 
 # Full Bucks County ZIP list - only used when MC_BUCKS_ONLY=1 to filter results.
 BUCKS_COUNTY_ZIPS = {
@@ -45,12 +45,19 @@ BUCKS_COUNTY_ZIPS = {
 }
 
 API_KEY     = os.environ.get("MARKETCHECK_API_KEY", "").strip()
-RADIUS      = int(os.environ.get("MC_RADIUS", "25"))
+RADIUS      = int(os.environ.get("MC_RADIUS", "50"))
 ROWS        = min(int(os.environ.get("MC_ROWS", "50")), 50)      # 50 is the API max
 MAX_VEHICLES= int(os.environ.get("MC_MAX_VEHICLES", "6000"))
 MAX_CALLS   = int(os.environ.get("MC_MAX_CALLS", "250"))
 HOST        = os.environ.get("MC_HOST", "api.marketcheck.com").strip()
 BUCKS_ONLY  = os.environ.get("MC_BUCKS_ONLY", "0").strip() == "1"
+
+# Affordable-first composition: aim for ~80% of listings at/under $15k
+# (everyday used cars), the rest newer/pricier. Pulled across a wider PA
+# radius so there are enough budget cars to fill the board.
+CHEAP_MAX    = int(os.environ.get("MC_CHEAP_MAX", "15000"))
+TARGET_TOTAL = int(os.environ.get("MC_TARGET_TOTAL", "2000"))
+CHEAP_FRAC   = float(os.environ.get("MC_CHEAP_FRAC", "0.80"))
 
 OUT = os.path.join(os.path.dirname(__file__), "..", "inventory.json")
 BASE = f"https://{HOST}/v2/search/car/active"
@@ -75,16 +82,24 @@ def _load_preserved_sellers():
 _calls = 0
 
 
-def _get(zip_code, start):
-    """One page of results for a ZIP. Returns (num_found, listings)."""
+def _get(zip_code, start, price_range=None, sort_order=None):
+    """One page of results for a ZIP. Returns (num_found, listings).
+    price_range like "0-15000" filters by price; sort_order "asc"/"desc"
+    sorts by price so we can pull the cheapest cars first."""
     global _calls
-    params = urllib.parse.urlencode({
+    q = {
         "api_key": API_KEY,
         "zip": zip_code,
         "radius": RADIUS,
         "rows": ROWS,
         "start": start,
-    })
+    }
+    if price_range:
+        q["price_range"] = price_range
+    if sort_order:
+        q["sort_by"] = "price"
+        q["sort_order"] = sort_order
+    params = urllib.parse.urlencode(q)
     _calls += 1
     with urllib.request.urlopen(f"{BASE}?{params}", timeout=45) as r:
         data = json.load(r)
@@ -135,18 +150,17 @@ def _map_vehicle(item, did):
     }
 
 
-def fetch():
-    dealers, vehicles, seen_vins, seen_dealers = {}, [], set(), set()
+def _collect(dealers, seen_vins, bucket, target, price_range, sort_order):
+    """Page every anchor ZIP, adding new VINs to `bucket` until it hits target."""
     for zip_code in ANCHOR_ZIPS:
-        if len(vehicles) >= MAX_VEHICLES or _calls >= MAX_CALLS:
+        if len(bucket) >= target or _calls >= MAX_CALLS:
             break
         start = 0
-        num_found = None
         while True:
-            if len(vehicles) >= MAX_VEHICLES or _calls >= MAX_CALLS:
+            if len(bucket) >= target or _calls >= MAX_CALLS:
                 break
             try:
-                num_found, listings = _get(zip_code, start)
+                num_found, listings = _get(zip_code, start, price_range, sort_order)
             except Exception as e:
                 print(f"  zip {zip_code} start {start}: {e}", file=sys.stderr)
                 break
@@ -162,22 +176,34 @@ def fetch():
                 if BUCKS_ONLY and dmap["zip"] not in BUCKS_COUNTY_ZIPS:
                     continue
                 seen_vins.add(vin)
-                if did not in seen_dealers:
-                    seen_dealers.add(did)
+                if did not in dealers:
                     dealers[did] = dmap
-                vehicles.append(_map_vehicle(item, did))
+                bucket.append(_map_vehicle(item, did))
                 added += 1
-                if len(vehicles) >= MAX_VEHICLES:
+                if len(bucket) >= target:
                     break
-            print(f"  zip {zip_code}: start {start:>4}  +{added:>2} new  "
-                  f"(total {len(vehicles)}, calls {_calls}, found ~{num_found})")
+            print(f"  [{price_range}] zip {zip_code} start {start:>4} +{added:>2} "
+                  f"(bucket {len(bucket)}/{target}, calls {_calls}, found ~{num_found})")
             start += ROWS
-            # MarketCheck caps deep paging at 10000/rows; also stop at num_found.
             if start >= num_found or start >= 10000:
                 break
-            time.sleep(0.2)  # be polite to the API
-    return list(dealers.values()), vehicles
+            time.sleep(0.2)
 
+
+def fetch():
+    dealers, seen_vins = {}, set()
+    cheap, premium = [], []
+    target_cheap = int(TARGET_TOTAL * CHEAP_FRAC)
+    target_premium = TARGET_TOTAL - target_cheap
+    print(f"Affordable pass: up to {target_cheap} cars at/under ${CHEAP_MAX:,} "
+          f"(cheapest first), radius {RADIUS}mi ...")
+    _collect(dealers, seen_vins, cheap, target_cheap, f"0-{CHEAP_MAX}", "asc")
+    print(f"Premium pass: up to {target_premium} cars over ${CHEAP_MAX:,} ...")
+    _collect(dealers, seen_vins, premium, target_premium, f"{CHEAP_MAX + 1}-1000000", "desc")
+    vehicles = cheap + premium
+    print(f"Collected {len(cheap)} affordable + {len(premium)} premium "
+          f"= {len(vehicles)} raw vehicles.")
+    return list(dealers.values()), vehicles
 
 def dedup_variety(vehicles):
     """Collapse the same car offered in multiple colors (same dealer + year +
