@@ -196,18 +196,27 @@ def _collect(dealers, seen_vins, bucket, target, price_range, sort_order):
 
 
 def fetch():
+    """Pull by price BAND (not cheapest-first) so the affordable 80% is a real
+    spread across $1.5k-$15k instead of a flood of the cheapest cars. Bands are non-overlapping; a
+    shared VIN set prevents duplicates. ~80% under $15k (incl. $2k-and-under), the rest up to $50k."""
     dealers, seen_vins = {}, set()
-    cheap, premium = [], []
-    target_cheap = int(TARGET_TOTAL * CHEAP_FRAC)
-    target_premium = TARGET_TOTAL - target_cheap
-    print(f"Affordable pass: up to {target_cheap} cars at/under ${CHEAP_MAX:,} "
-          f"(cheapest first), radius {RADIUS}mi ...")
-    _collect(dealers, seen_vins, cheap, target_cheap, f"0-{CHEAP_MAX}", "asc")
-    print(f"Premium pass: up to {target_premium} cars over ${CHEAP_MAX:,} ...")
-    _collect(dealers, seen_vins, premium, target_premium, f"{CHEAP_MAX + 1}-1000000", "desc")
-    vehicles = cheap + premium
-    print(f"Collected {len(cheap)} affordable + {len(premium)} premium "
-          f"= {len(vehicles)} raw vehicles.")
+    bands = [
+        ("500-2000",       200),   # $2k-and-under bargains
+        ("2000-5000",      350),   # budget used
+        ("5000-9000",      500),   # everyday used
+        ("9000-15000",     550),   # -> ~1600 under $15k (80%), good spread
+        ("15000-30000",    250),   # newer / pre-owned
+        ("30000-50000",    150),   # -> ~400 from $15k to $50k (20%)
+    ]
+    vehicles = []
+    for price_range, target in bands:
+        before = len(vehicles)
+        bucket = []
+        print(f"Band ${price_range}: up to {target} cars, radius {RADIUS}mi ...")
+        _collect(dealers, seen_vins, bucket, target, price_range, None)
+        vehicles.extend(bucket)
+        print(f"  -> band ${price_range}: +{len(vehicles) - before} (running total {len(vehicles)})")
+    print(f"Collected {len(vehicles)} raw vehicles across {len(bands)} price bands.")
     return list(dealers.values()), vehicles
 
 def dedup_variety(vehicles):
@@ -218,7 +227,7 @@ def dedup_variety(vehicles):
     groups = {}
     for v in vehicles:
         price = v.get("price") or 0
-        if price < 1500:
+        if price < 500:
             continue
         key = (v.get("dealerId"), v.get("year"), v.get("make"), v.get("model"), v.get("trim"))
         cur = groups.get(key)
