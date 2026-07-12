@@ -59,7 +59,12 @@ CHEAP_MAX    = int(os.environ.get("MC_CHEAP_MAX", "15000"))
 TARGET_TOTAL = int(os.environ.get("MC_TARGET_TOTAL", "2000"))
 CHEAP_FRAC   = float(os.environ.get("MC_CHEAP_FRAC", "0.80"))
 
-OUT = os.path.join(os.path.dirname(__file__), "..", "inventory.json")
+_SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+_OUT_HERE = os.path.join(_SCRIPT_DIR, "inventory.json")
+_OUT_UP = os.path.join(_SCRIPT_DIR, "..", "inventory.json")
+# Write next to the script (repo-root layout) unless inventory.json only lives
+# one level up (scripts/ layout). Prevents writing outside the repo checkout.
+OUT = _OUT_UP if (os.path.exists(_OUT_UP) and not os.path.exists(_OUT_HERE)) else _OUT_HERE
 BASE = f"https://{HOST}/v2/search/car/active"
 
 # Seller listings submitted through the app carry this dealer id. They live in
