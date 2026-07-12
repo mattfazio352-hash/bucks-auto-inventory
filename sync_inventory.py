@@ -129,7 +129,7 @@ def _map_dealer(dealer):
 def _map_vehicle(item, did):
     build = item.get("build", {}) or {}
     media = item.get("media", {}) or {}
-    photos = media.get("photo_links", []) or [""]
+    photos = media.get("photo_links", []) or []
     return {
         "vin": item.get("vin", ""),
         "year": int(build.get("year") or 0),
@@ -152,6 +152,7 @@ def _map_vehicle(item, did):
         "sellerType": "Dealer",
         "description": item.get("heading", "") or "",
         "photoUrl": photos[0] if photos else "",
+        "photoUrls": photos[:10],
     }
 
 
